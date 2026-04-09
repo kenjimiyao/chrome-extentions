@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "LLM All Prompt Relay",
+  "version": "0.1.0",
+  "description": "Open a popup, type one prompt, and send it to Gemini, ChatGPT, and Claude.",
+  "permissions": [
+    "tabs",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://chatgpt.com/*",
+    "https://chat.openai.com/*",
+    "https://claude.ai/*",
+    "https://gemini.google.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "LLM All Prompt Relay",
+    "default_popup": "popup.html"
+  }
+}

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LLM All Prompt Relay</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="popup">
+      <section class="panel">
+        <header class="panel__header">
+          <h1>LLM-ALL</h1>
+        </header>
+
+        <form id="prompt-form" class="prompt-form">
+          <textarea
+            id="prompt"
+            name="prompt"
+            rows="8"
+            placeholder="ここに質問を入力"
+            autofocus
+          ></textarea>
+
+          <button id="submit-button" type="submit">送信</button>
+        </form>
+      </section>
+    </main>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
