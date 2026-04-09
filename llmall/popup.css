@@ -30,8 +30,7 @@ body {
   backdrop-filter: blur(12px);
 }
 
-.panel__header h1,
-.status h2 {
+.panel__header h1 {
   margin: 0;
 }
 
@@ -45,6 +44,24 @@ body {
   display: grid;
   gap: 12px;
   margin-top: 14px;
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  width: fit-content;
+  justify-self: end;
+  color: #30415f;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.toggle input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: #2d62d1;
 }
 
 textarea {

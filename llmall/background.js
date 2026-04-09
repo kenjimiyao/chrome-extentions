@@ -92,7 +92,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return false;
   }
 
-  handlePromptSubmission(message.prompt)
+  handlePromptSubmission(message.prompt, Boolean(message.openOnly))
     .then(sendResponse)
     .catch((error) => {
       sendResponse({
@@ -108,7 +108,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return true;
 });
 
-async function handlePromptSubmission(prompt) {
+async function handlePromptSubmission(prompt, openOnly = false) {
   const providers = Object.values(PROVIDERS);
   const context = await getSubmissionContext();
   const tabs = [];
@@ -119,7 +119,7 @@ async function handlePromptSubmission(prompt) {
   }
 
   const results = await Promise.all(
-    tabs.map(({ provider, tab }) => submitPromptToProvider(provider, prompt, tab))
+    tabs.map(({ provider, tab }) => submitPromptToProvider(provider, prompt, tab, openOnly))
   );
 
   await revealSubmittedTabs(tabs.map(({ tab }) => tab), context);
@@ -130,7 +130,7 @@ async function handlePromptSubmission(prompt) {
   };
 }
 
-async function submitPromptToProvider(provider, prompt, existingTab) {
+async function submitPromptToProvider(provider, prompt, existingTab, openOnly = false) {
   const tab = existingTab || (await createFreshTab(provider));
   let lastMessage = "送信に失敗しました。";
 
@@ -141,7 +141,7 @@ async function submitPromptToProvider(provider, prompt, existingTab) {
       const injectionResults = await chrome.scripting.executeScript({
         target: { tabId: tab.id },
         func: injectPromptIntoPage,
-        args: [provider, prompt]
+        args: [provider, prompt, { openOnly }]
       });
 
       const [{ result }] = injectionResults;
@@ -239,7 +239,8 @@ async function waitForTabToSettle(tabId, settleMs = 1500, timeoutMs = 30000) {
   throw new Error("タブの描画安定待ちがタイムアウトしました。");
 }
 
-function injectPromptIntoPage(provider, prompt) {
+function injectPromptIntoPage(provider, prompt, options = {}) {
+  const openOnly = Boolean(options.openOnly);
   const timeoutAt = Date.now() + 20000;
   const sendKeywords = ["send", "submit", "送信", "メッセージを送信"];
 
@@ -713,6 +714,13 @@ function injectPromptIntoPage(provider, prompt) {
         if (!(await ensureEditorContainsPrompt(editor, prompt))) {
           lastFailureMessage = "入力欄候補は見つかりましたが、テキストを反映できませんでした。";
           continue;
+        }
+
+        if (openOnly) {
+          return {
+            ok: true,
+            message: "新規チャットを開いて入力しました。"
+          };
         }
 
         const didClick = await clickSendButton(editor);

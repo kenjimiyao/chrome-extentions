@@ -1,5 +1,6 @@
 const form = document.querySelector("#prompt-form");
 const promptField = document.querySelector("#prompt");
+const openOnlyField = document.querySelector("#open-only");
 const submitButton = document.querySelector("#submit-button");
 
 function setBusy(isBusy) {
@@ -33,7 +34,8 @@ form.addEventListener("submit", async (event) => {
   try {
     const response = await chrome.runtime.sendMessage({
       type: "SUBMIT_PROMPT",
-      prompt
+      prompt,
+      openOnly: openOnlyField.checked
     });
 
     if (!response || !Array.isArray(response.results)) {
