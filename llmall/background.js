@@ -87,7 +87,31 @@ const PROVIDERS = {
   }
 };
 
+const SUBMISSION_QUEUE_KEY = "submissionQueue";
+const PROCESS_SUBMISSIONS_ALARM = "process-submissions";
+const NOTIFICATION_ICON_PATH = "notification-icon.png";
+const NOTIFICATION_ID_PREFIX = "submission-failure";
+
+let queueProcessorPromise = null;
+let queueMutationPromise = Promise.resolve();
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === "QUEUE_PROMPT_SUBMISSION") {
+    queuePromptSubmission(message.prompt, Boolean(message.openOnly))
+      .then(() => {
+        sendResponse({ ok: true });
+      })
+      .catch((error) => {
+        void notifyUnexpectedFailure(error);
+        sendResponse({
+          ok: false,
+          message: error instanceof Error ? error.message : "送信キューへの登録に失敗しました。"
+        });
+      });
+
+    return true;
+  }
+
   if (message?.type !== "SUBMIT_PROMPT") {
     return false;
   }
@@ -108,21 +132,192 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return true;
 });
 
-async function handlePromptSubmission(prompt, openOnly = false) {
-  const providers = Object.values(PROVIDERS);
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name !== PROCESS_SUBMISSIONS_ALARM) {
+    return;
+  }
+
+  void processQueuedSubmissions();
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  void processQueuedSubmissions();
+});
+
+async function queuePromptSubmission(prompt, openOnly = false) {
+  const normalizedPrompt = typeof prompt === "string" ? prompt.trim() : "";
+  if (!normalizedPrompt) {
+    throw new Error("プロンプトが空です。");
+  }
+
   const context = await getSubmissionContext();
+  const queuedSubmission = {
+    prompt: normalizedPrompt,
+    openOnly,
+    context,
+    queuedAt: Date.now()
+  };
+
+  await mutateSubmissionQueue((queue) => ({
+    [SUBMISSION_QUEUE_KEY]: queue.concat(queuedSubmission)
+  }));
+
+  await chrome.alarms.create(PROCESS_SUBMISSIONS_ALARM, {
+    when: Date.now() + 50
+  });
+
+  void processQueuedSubmissions();
+}
+
+async function processQueuedSubmissions() {
+  if (queueProcessorPromise) {
+    return queueProcessorPromise;
+  }
+
+  queueProcessorPromise = (async () => {
+    while (true) {
+      const nextSubmission = await dequeuePromptSubmission();
+      if (!nextSubmission) {
+        return;
+      }
+
+      try {
+        const result = await handlePromptSubmission(
+          nextSubmission.prompt,
+          Boolean(nextSubmission.openOnly),
+          nextSubmission.context
+        );
+
+        if (result.results.some((providerResult) => !providerResult.ok)) {
+          await notifySubmissionFailure(result.results);
+        }
+      } catch (error) {
+        console.error("Queued prompt submission failed.", error);
+        await notifyUnexpectedFailure(error);
+      }
+    }
+  })().finally(() => {
+    queueProcessorPromise = null;
+  });
+
+  return queueProcessorPromise;
+}
+
+async function dequeuePromptSubmission() {
+  return mutateSubmissionQueue((queue) => {
+    if (!queue.length) {
+      return null;
+    }
+
+    const [nextSubmission, ...remainingQueue] = queue;
+
+    return {
+      nextSubmission,
+      nextState: {
+        [SUBMISSION_QUEUE_KEY]: remainingQueue
+      }
+    };
+  });
+}
+
+function mutateSubmissionQueue(mutation) {
+  const runMutation = async () => {
+    const { [SUBMISSION_QUEUE_KEY]: queue = [] } = await chrome.storage.local.get(SUBMISSION_QUEUE_KEY);
+    const result = await mutation(queue);
+
+    if (result === null) {
+      return null;
+    }
+
+    if (result && typeof result === "object" && "nextState" in result) {
+      await chrome.storage.local.set(result.nextState);
+      return result.nextSubmission ?? null;
+    }
+
+    await chrome.storage.local.set(result);
+    return null;
+  };
+
+  const nextMutation = queueMutationPromise.then(runMutation, runMutation);
+  queueMutationPromise = nextMutation.catch(() => {});
+  return nextMutation;
+}
+
+async function notifySubmissionFailure(results) {
+  const failedResults = results.filter((result) => !result.ok);
+  if (!failedResults.length) {
+    return;
+  }
+
+  const title =
+    failedResults.length === 1
+      ? `${failedResults[0].provider} への送信に失敗しました`
+      : `${failedResults.length}件の送信に失敗しました`;
+
+  const message = truncateNotificationText(
+    failedResults
+      .map((result) => `${result.provider}: ${result.message}`)
+      .join(" / "),
+    240
+  );
+
+  await createNotification(title, message);
+}
+
+async function notifyUnexpectedFailure(error) {
+  const message = truncateNotificationText(
+    error instanceof Error ? error.message : "送信処理に失敗しました。",
+    240
+  );
+
+  await createNotification("送信処理に失敗しました", message);
+}
+
+async function createNotification(title, message) {
+  const options = {
+    type: "basic",
+    title,
+    message,
+    iconUrl: chrome.runtime.getURL(NOTIFICATION_ICON_PATH)
+  };
+
+  await new Promise((resolve) => {
+    chrome.notifications.create(
+      `${NOTIFICATION_ID_PREFIX}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      options,
+      () => {
+        if (chrome.runtime.lastError) {
+          console.error("Notification failed.", chrome.runtime.lastError.message);
+        }
+
+        resolve();
+      }
+    );
+  });
+}
+
+function truncateNotificationText(value, maxLength) {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, Math.max(0, maxLength - 1))}\u2026`;
+}
+
+async function handlePromptSubmission(prompt, openOnly = false, context = null) {
+  const providers = Object.values(PROVIDERS);
+  const submissionContext = context || (await getSubmissionContext());
   const tabs = [];
 
   for (const [index, provider] of providers.entries()) {
-    const tab = await createFreshTab(provider, context, index);
+    const tab = await createFreshTab(provider, submissionContext, index);
     tabs.push({ provider, tab });
   }
 
   const results = await Promise.all(
     tabs.map(({ provider, tab }) => submitPromptToProvider(provider, prompt, tab, openOnly))
   );
-
-  await revealSubmittedTabs(tabs.map(({ tab }) => tab), context);
 
   return {
     ok: results.some((result) => result.ok),
@@ -199,19 +394,6 @@ async function createFreshTab(provider, context = {}, offset = 0) {
   }
 
   return createdTab;
-}
-
-async function revealSubmittedTabs(tabs, context) {
-  const visibleTabs = tabs.filter((tab) => tab?.id);
-  if (!visibleTabs.length) {
-    return;
-  }
-
-  if (context.windowId) {
-    await chrome.windows.update(context.windowId, { focused: true });
-  }
-
-  await chrome.tabs.update(visibleTabs[0].id, { active: true });
 }
 
 async function waitForTabToSettle(tabId, settleMs = 1500, timeoutMs = 30000) {
